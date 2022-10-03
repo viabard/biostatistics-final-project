@@ -1,0 +1,270 @@
+---
+title: "Final Project"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Libraries
+```{r}
+#install.packages("Hmisc")
+#install.packages("e1071")
+#install.packages("caTools")
+#install.packages("caret")
+#install.packages("psych")
+#install.packages("dplyr")
+#install.packages("ggplot2")
+library(Hmisc)
+library(e1071)
+library(caTools)
+library(caret)
+library(psych)
+library(dplyr)
+library(ggplot2)
+```
+
+
+
+## Data Download/Loading Preparation
+
+### Make the ./data/ directory.
+```{r}
+check_for_file <- function(location, name){
+  x <- as.vector(list.files(location))
+  if (name %in% x){
+    return(T)
+  }
+  return(F)
+}
+
+if (!check_for_file('.', 'data')) {
+  print('Making directory ./data/')
+  dir.create(file.path('./data/'))
+}
+```
+### Download Files to ./data/
+```{r}
+download.file('https://archive.ics.uci.edu/ml/machine-learning-databases/00296/dataset_diabetes.zip', './data/diabetes.zip')
+unzip('./data/diabetes.zip', exdir='data')
+```
+### Read in data
+```{r}
+data <- read.csv('./data/dataset_diabetes/diabetic_data.csv')
+print(dim(data))
+head(data)
+```
+## Data preparation
+
+### age
+```{r}
+# replace age ranges with the middle of that range
+data[data == '[0-10)'] <- 5
+data[data == '[10-20)'] <- 15
+data[data == '[20-30)'] <- 25
+data[data == '[30-40)'] <- 35
+data[data == '[40-50)'] <- 45
+data[data == '[50-60)'] <- 55
+data[data == '[60-70)'] <- 65
+data[data == '[70-80)'] <- 75
+data[data == '[80-90)'] <- 85
+data[data == '[90-100)'] <- 95
+print(dim(data))
+head(data)
+```
+### Missing values (NaNs/?)
+```{r}
+# Value IDs provided in the `IDs_mapping.csv` file
+data[data == '?' | data == 'None'] <- NaN
+data$admission_type_id[data$admission_type_id == 6 | data$admission_type_id == 8] <- NaN # 6 = NULL, 8 = Not Mapped
+data$discharge_disposition_id[data$discharge_disposition_id == 18 | data$discharge_disposition_id == 25 | data$discharge_disposition_id == 26] <- NaN # 18 = NULL, 25 = Not Mapped, 26 = Unknown/Invalid
+data$admission_source_id[data$admission_source_id == 15 | data$admission_source_id == 17 | data$admission_source_id == 20 | data$admission_source_id == 21 | data$admission_source_id == 9] <- NaN # 15 = Not Available, 17 = NULL, 20 = Not Mapped, 21 = Unknown/Invalid, 9 = Not Available
+
+# get number of NaNs in each column
+i = 1
+x = c()
+for (col in data) {
+  if (!sum(col == 'NaN') == 0){
+  x = c(x, list(c(colnames(data)[i], sum(col == 'NaN'))))}
+  i <- i + 1
+}
+# prints columns with nans and how many nans
+print(x)
+```
+
+
+```{r}
+# race, weight, payer_code, medical_specialty, admission_type_id, discharge_disposition_id, admission_source_id and diag_1, diag_2, diag_3 have NaNs
+# drop race, weight, payer_code, medical_specialty
+data_dropped <- subset(data, select=-c(3, 4, 6, 11, 12, 23, 24, 19, 20, 21))
+data_dropped
+```
+
+```{r}
+data_dropped_na_omitted <- na.omit(data_dropped)
+data_dropped_na_omitted
+```
+
+```{r}
+# unique values
+lengths(lapply(data_dropped_na_omitted, unique))
+```
+
+Convert characters to numeric values. For readmission, readmission time was not accounted for to simplify the problem. (Readmission >30 and <30 days after visit treated the same)
+```{r}
+data_dropped_na_omitted[data_dropped_na_omitted == 'Up'] <- 4
+data_dropped_na_omitted[data_dropped_na_omitted == 'Steady'] <- 3
+data_dropped_na_omitted[data_dropped_na_omitted == 'Down'] <- 1
+data_dropped_na_omitted[data_dropped_na_omitted == 'No'] <- 2
+data_dropped_na_omitted[data_dropped_na_omitted == 'Ch'] <- 1
+data_dropped_na_omitted[data_dropped_na_omitted == 'Yes'] <- 1
+data_dropped_na_omitted[data_dropped_na_omitted == '>30'] <- 1
+data_dropped_na_omitted[data_dropped_na_omitted == '<30'] <- 1
+data_dropped_na_omitted[data_dropped_na_omitted == 'NO'] <- 0
+data_dropped_na_omitted
+```
+Of the remaining columns, here are the continuous ones:
+  age, time_in_hospital, num_lab_procedures, num_procedures, num_medications, number_outpatient, number_emergency, number_inpatient, number_diagnoses
+
+```{r}
+print(dim(data_dropped_na_omitted))
+shapiro.test(as.integer(data_dropped_na_omitted[sample(nrow(data_dropped_na_omitted), 2000), ]$age))
+data_dropped_na_omitted$age <- as.integer(data_dropped_na_omitted$age)
+hist(as.integer(data_dropped_na_omitted$age))
+hist(as.integer(data_dropped_na_omitted$time_in_hospital))
+hist(as.integer(data_dropped_na_omitted$num_lab_procedures))
+hist(as.integer(data_dropped_na_omitted$num_procedures))
+hist(as.integer(data_dropped_na_omitted$num_medications))
+hist(as.integer(data_dropped_na_omitted$number_outpatient))
+hist(as.integer(data_dropped_na_omitted$number_emergency))
+hist(as.integer(data_dropped_na_omitted$number_inpatient))
+hist(as.integer(data_dropped_na_omitted$number_diagnoses))
+```
+
+```{r, fig.width = 20, fig.height = 16}
+continuous <- data_dropped_na_omitted[c(3,7,8,9,10,11,12,13,14)]
+pairs.panels(continuous,
+             method = "spearman",
+             hist.col = "#00AFBB",
+             density = T,
+             ellipses = T)
+summary(continuous)
+sapply(continuous, sd)
+rcorr(as.matrix(continuous), type="spearman")
+```
+```{r}
+samp <- sample_n(continuous, 2000)
+d <- dist(sample_n(continuous, 2000))
+fit <- cmdscale(d, eig=T)
+colnames(fit$points) <- c('Coordinate1', 'Coordinate2')
+```
+```{r}
+samp
+```
+
+```{r,fig.width = 10, fig.height = 7}
+fit$points <- as.data.frame(fit$points)
+ggplot(fit$points, aes(Coordinate1, Coordinate2, color=samp$num_medications, size=samp$time_in_hospital)) + geom_point() + ggtitle('MDS of Continuous Features \n(Random Sample of 2000 Patients)')
+```
+
+```{r}
+categorical <- data_dropped_na_omitted[-c(3,7,8,9,10,11,12,13,14,40)]
+readmitted <- data_dropped_na_omitted[40]
+everything_but_readmitted <- data_dropped_na_omitted[-c(40, 1)]
+everything_but_readmitted
+```
+```{r}
+# convert to factors
+data_dropped_na_omitted$readmitted <- factor(data_dropped_na_omitted$readmitted)
+data_dropped_na_omitted$discharge_disposition_id <- factor(data_dropped_na_omitted$discharge_disposition_id)
+data_dropped_na_omitted$admission_source_id <- factor(data_dropped_na_omitted$admission_source_id)
+data_dropped_na_omitted$metformin <- factor(data_dropped_na_omitted$metformin)
+data_dropped_na_omitted$repaglinide <- factor(data_dropped_na_omitted$repaglinide)
+data_dropped_na_omitted$chlorpropamide <- factor(data_dropped_na_omitted$chlorpropamide)
+data_dropped_na_omitted$glimepiride <- factor(data_dropped_na_omitted$glimepiride)
+data_dropped_na_omitted$acetohexamide <- factor(data_dropped_na_omitted$acetohexamide)
+data_dropped_na_omitted$glipizide <- factor(data_dropped_na_omitted$glipizide)
+data_dropped_na_omitted$glyburide <- factor(data_dropped_na_omitted$glyburide)
+data_dropped_na_omitted$tolbutamide <- factor(data_dropped_na_omitted$tolbutamide)
+data_dropped_na_omitted$pioglitazone <- factor(data_dropped_na_omitted$pioglitazone)
+data_dropped_na_omitted$rosiglitazone <- factor(data_dropped_na_omitted$rosiglitazone)
+data_dropped_na_omitted$acarbose <- factor(data_dropped_na_omitted$acarbose)
+data_dropped_na_omitted$miglitol <- factor(data_dropped_na_omitted$miglitol)
+data_dropped_na_omitted$troglitazone <- factor(data_dropped_na_omitted$troglitazone)
+data_dropped_na_omitted$tolazamide <- factor(data_dropped_na_omitted$tolazamide)
+data_dropped_na_omitted$examide <- factor(data_dropped_na_omitted$examide)
+data_dropped_na_omitted$citoglipton <- factor(data_dropped_na_omitted$citoglipton)
+data_dropped_na_omitted$insulin <- factor(data_dropped_na_omitted$insulin)
+data_dropped_na_omitted$glyburide.metformin <- factor(data_dropped_na_omitted$glyburide.metformin)
+data_dropped_na_omitted$glipizide.metformin <- factor(data_dropped_na_omitted$glipizide.metformin)
+data_dropped_na_omitted$glimepiride.pioglitazone <- factor(data_dropped_na_omitted$glimepiride.pioglitazone)
+data_dropped_na_omitted$metformin.rosiglitazone <- factor(data_dropped_na_omitted$metformin.rosiglitazone)
+data_dropped_na_omitted$metformin.pioglitazone <- factor(data_dropped_na_omitted$metformin.pioglitazone)
+data_dropped_na_omitted$change <- factor(data_dropped_na_omitted$change)
+data_dropped_na_omitted$diabetesMed <- factor(data_dropped_na_omitted$diabetesMed)
+```
+```{r}
+# split test and train (just first 60% for test, rest as train)
+test <- data_dropped_na_omitted[1:as.integer(.4*nrow(data_dropped_na_omitted)),]
+train <- data_dropped_na_omitted[as.integer(.4*nrow(data_dropped_na_omitted))+1:nrow(data_dropped_na_omitted),]
+train
+```
+
+```{r}
+# logistic regression change + diabetesMed + age + time_in_hospital + num_lab_procedures + insulin + number_diagnoses + number_emergency + num_procedures
+logic <- glm(formula = readmitted ~ change + diabetesMed + age + time_in_hospital + num_lab_procedures + insulin + number_diagnoses + number_emergency + num_procedures+num_medications+
+number_outpatient+
+number_emergency+
+number_inpatient+
+glyburide.metformin+
+glipizide.metformin+
+glimepiride.pioglitazone+
+metformin.rosiglitazone+
+metformin.pioglitazone+
+glyburide+
+tolbutamide+
+pioglitazone+
+rosiglitazone+
+acarbose, family="binomial", data=train)
+summary(logic)
+```
+```{r}
+suppressWarnings(confint(logic)) 
+```
+```{r}
+test$predictions <-  predict(logic, newdata=test, type="response")
+test[c(40, 41, 1, 2, 3, 4, 5, 6)]
+```
+```{r}
+# get accuracy
+test$predictions_0.5 = ifelse(test$predictions >= 0.5, 1, 0)
+test[c(40, 41, 42, 1, 2, 3, 4, 5, 6)]
+```
+```{r}
+accuracy <- test$readmitted == test$predictions_0.5
+sum(accuracy)/nrow(test)
+```
+```{r}
+cm <- table(test$readmitted, test$predictions_0.5)
+cm
+```
+
+```{r}
+confusionMatrix(cm, positive='1')
+```
+
+# Naive Bayes
+```{r}
+set.seed(100)
+classifier <- naiveBayes(readmitted ~ ., data=train)
+classifier
+```
+```{r}
+# predicting and making confusion matrix
+nb_pred <- predict(classifier, newdata = test)
+cm2 <- table(test$readmitted, nb_pred)
+cm2
+```
+
+```{r}
+confusionMatrix(cm2, positive='1')
+```
